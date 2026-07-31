@@ -169,30 +169,36 @@ func coreSockProfile(log *zap.Logger) wasmcomponent.HostProfile {
 		Register: func(_ context.Context, rt *wasmrt.Runtime) error {
 			host := coresock.New(log)
 			i32, i64 := api.ValueTypeI32, api.ValueTypeI64
-			specs := []struct {
-				name    string
-				params  []api.ValueType
-				results []api.ValueType
-				fn      api.GoModuleFunc
-				async   bool
-			}{
-				// Registered synchronous on purpose. Declaring them async makes the
-				// engine asyncify-transform the whole guest, and instrumenting a
-				// 10 MB CPython pushes wazero's compile past the runtime's 30s
-				// entry-load timeout. The guest call is synchronous anyway, so the
-				// host blocking on the socket is exactly the required behaviour.
-				{"connect", []api.ValueType{i32, i32, i32, i32}, []api.ValueType{i64}, host.Connect, false},
-				{"send", []api.ValueType{i32, i32, i32}, []api.ValueType{i64}, host.Send, false},
-				{"recv", []api.ValueType{i32, i32, i32}, []api.ValueType{i64}, host.Recv, false},
-				{"close", []api.ValueType{i32}, []api.ValueType{i32}, host.Close, false},
-			}
-			for _, spec := range specs {
-				if err := rt.RegisterCoreFunc(
-					coresock.Namespace, spec.name, spec.params, spec.results, spec.fn, spec.async,
-				); err != nil {
+
+			// Registered synchronous on purpose. Declaring them async makes the
+			// engine asyncify-transform the whole guest, and instrumenting a 10 MB
+			// interpreter pushes wazero's compile past the runtime's 30s entry-load
+			// timeout. The guest call is synchronous anyway, so the host blocking on
+			// the socket is exactly the required behavior.
+			register := func(name string, params, results []api.ValueType, fn api.GoModuleFunc) error {
+				if err := rt.RegisterCoreFunc(coresock.Namespace, name, params, results, fn, false); err != nil {
 					return runtimewasm.NewRegisterHostError(coresock.Namespace, err)
 				}
+				return nil
 			}
+
+			if err := register("connect",
+				[]api.ValueType{i32, i32, i32, i32}, []api.ValueType{i64}, host.Connect); err != nil {
+				return err
+			}
+			if err := register("send",
+				[]api.ValueType{i32, i32, i32}, []api.ValueType{i64}, host.Send); err != nil {
+				return err
+			}
+			if err := register("recv",
+				[]api.ValueType{i32, i32, i32}, []api.ValueType{i64}, host.Recv); err != nil {
+				return err
+			}
+			if err := register("close",
+				[]api.ValueType{i32}, []api.ValueType{i32}, host.Close); err != nil {
+				return err
+			}
+
 			log.Info("wasm host profile registered", zap.String("profile", coresock.Namespace))
 			return nil
 		},

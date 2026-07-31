@@ -23,12 +23,15 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/tetratelabs/wazero/api"
 	"go.uber.org/zap"
 
+	netapi "github.com/wippyai/runtime/api/net"
+	"github.com/wippyai/runtime/api/registry"
 	"github.com/wippyai/runtime/runtime/security"
 )
 
@@ -66,6 +69,47 @@ type Host struct {
 // New builds a TCP host.
 func New(log *zap.Logger) *Host {
 	return &Host{log: log, conns: make(map[uint32]net.Conn)}
+}
+
+// dial resolves the same network options the Lua http_client honors, so a guest is
+// routed exactly like host-side code in the same application.
+//
+// An overlay resolves DNS at its far end, so no local lookup happens for it: a local
+// lookup would leak the target to the system resolver and defeat the overlay. The
+// private-address policy still applies, because an overlay is not a way around it.
+func (h *Host) dial(ctx context.Context, host, target string, timeout time.Duration) (net.Conn, error) {
+	overlayID := netapi.GetDefaultNetwork(ctx)
+	if overlayID == "" {
+		if err := checkTarget(ctx, host); err != nil {
+			return nil, err
+		}
+		dialer := net.Dialer{Timeout: timeout}
+		return dialer.DialContext(ctx, "tcp", target)
+	}
+
+	if !security.IsAllowed(ctx, "network.select", overlayID, nil) {
+		return nil, fmt.Errorf("not allowed: network %s", overlayID)
+	}
+	// Refuse to fall back to clearnet when an overlay was asked for: falling back
+	// would leak DNS and the target address to the local network.
+	// Resolved per call, like the HTTP dispatcher does, so the guest follows the
+	// network the surrounding frame selected rather than one fixed at boot.
+	networkReg := netapi.GetNetworkRegistry(ctx)
+	if networkReg == nil {
+		return nil, fmt.Errorf("overlay network %q requested but no network registry is configured", overlayID)
+	}
+	svc, err := networkReg.GetNetwork(registry.ParseID(overlayID))
+	if err != nil {
+		return nil, fmt.Errorf("overlay network %q: %w", overlayID, err)
+	}
+	if ip := net.ParseIP(host); ip != nil && isPrivateIP(ip) &&
+		!security.IsAllowed(ctx, "http_client.private_ip", host, nil) {
+		return nil, fmt.Errorf("not allowed: private IP %s", host)
+	}
+
+	dialCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return svc.DialContext(dialCtx, "tcp", target)
 }
 
 func pack(status, value uint32) uint64 {
@@ -125,14 +169,6 @@ func (h *Host) Connect(ctx context.Context, mod api.Module, stack []uint64) {
 		stack[0] = pack(StatusDenied, 0)
 		return
 	}
-	if err := checkTarget(ctx, host); err != nil {
-		if h.log != nil {
-			h.log.Debug("core socket connect denied", zap.String("target", target), zap.Error(err))
-		}
-		stack[0] = pack(StatusDenied, 0)
-		return
-	}
-
 	h.mu.Lock()
 	live := len(h.conns)
 	h.mu.Unlock()
@@ -145,11 +181,14 @@ func (h *Host) Connect(ctx context.Context, mod api.Module, stack []uint64) {
 	if timeoutMS > 0 {
 		timeout = time.Duration(timeoutMS) * time.Millisecond
 	}
-	dialer := net.Dialer{Timeout: timeout}
-	conn, err := dialer.DialContext(ctx, "tcp", target)
+	conn, err := h.dial(ctx, host, target, timeout)
 	if err != nil {
 		if h.log != nil {
-			h.log.Debug("core socket connect failed", zap.String("target", target), zap.Error(err))
+			h.log.Debug("core socket connect refused", zap.String("target", target), zap.Error(err))
+		}
+		if strings.Contains(err.Error(), "not allowed") || strings.Contains(err.Error(), "overlay network") {
+			stack[0] = pack(StatusDenied, 0)
+			return
 		}
 		stack[0] = pack(StatusTransport, 0)
 		return
