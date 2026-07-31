@@ -5,9 +5,12 @@ package wasm
 import (
 	"context"
 
+	"github.com/tetratelabs/wazero/api"
+
 	"github.com/wippyai/runtime/api/dispatcher"
 	runtimewasm "github.com/wippyai/runtime/runtime/wasm"
 	wasmcomponent "github.com/wippyai/runtime/runtime/wasm/component"
+	"github.com/wippyai/runtime/runtime/wasm/host/wippy/hosts/coresock"
 	wasmrt "github.com/wippyai/wasm-runtime/runtime"
 	"github.com/wippyai/wasm-runtime/wasi/preview2"
 	"go.uber.org/zap"
@@ -29,6 +32,7 @@ func DefaultHostProfiles(log *zap.Logger, disp dispatcher.Dispatcher) []wasmcomp
 		wasiRandomProfile(log),
 		wasiSocketsProfile(log),
 		wasiHTTPProfile(disp, log),
+		coreSockProfile(log),
 	}
 }
 
@@ -148,6 +152,49 @@ func wasiHTTPProfile(d dispatcher.Dispatcher, log *zap.Logger) wasmcomponent.Hos
 				return runtimewasm.ErrDispatcherNotFound
 			}
 			return registerHosts(ctx, rt, []hostFactory{httpHosts}, log, wasmcomponent.HostProfileWASIHTTP)
+		},
+	}
+}
+
+// coreSockProfile exposes outbound TCP to core modules.
+//
+// Deliberately not ComponentOnly: wasi:sockets and wasi:http both are, so a core
+// module has no way to reach the network at all. The signatures are raw integers
+// because that is what a core import can express, and the calls are async so the
+// guest yields while the host waits on the connection.
+func coreSockProfile(log *zap.Logger) wasmcomponent.HostProfile {
+	return wasmcomponent.HostProfile{
+		Name:    coresock.Namespace,
+		Aliases: []string{coresock.Namespace, "wippy:sock"},
+		Register: func(_ context.Context, rt *wasmrt.Runtime) error {
+			host := coresock.New(log)
+			i32, i64 := api.ValueTypeI32, api.ValueTypeI64
+			specs := []struct {
+				name    string
+				params  []api.ValueType
+				results []api.ValueType
+				fn      api.GoModuleFunc
+				async   bool
+			}{
+				// Registered synchronous on purpose. Declaring them async makes the
+				// engine asyncify-transform the whole guest, and instrumenting a
+				// 10 MB CPython pushes wazero's compile past the runtime's 30s
+				// entry-load timeout. The guest call is synchronous anyway, so the
+				// host blocking on the socket is exactly the required behaviour.
+				{"connect", []api.ValueType{i32, i32, i32, i32}, []api.ValueType{i64}, host.Connect, false},
+				{"send", []api.ValueType{i32, i32, i32}, []api.ValueType{i64}, host.Send, false},
+				{"recv", []api.ValueType{i32, i32, i32}, []api.ValueType{i64}, host.Recv, false},
+				{"close", []api.ValueType{i32}, []api.ValueType{i32}, host.Close, false},
+			}
+			for _, spec := range specs {
+				if err := rt.RegisterCoreFunc(
+					coresock.Namespace, spec.name, spec.params, spec.results, spec.fn, spec.async,
+				); err != nil {
+					return runtimewasm.NewRegisterHostError(coresock.Namespace, err)
+				}
+			}
+			log.Info("wasm host profile registered", zap.String("profile", coresock.Namespace))
+			return nil
 		},
 	}
 }

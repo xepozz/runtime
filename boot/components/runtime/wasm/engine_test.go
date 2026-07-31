@@ -56,6 +56,9 @@ func TestDefaultHostProfiles(t *testing.T) {
 		"funcs", "wasi1",
 		"wasi:io", "wasi:poll", "wasi:clocks", "wasi:cli",
 		"wasi:filesystem", "wasi:random", "wasi:sockets", "wasi:http",
+		// Core modules cannot import wasi:sockets or wasi:http, both of which are
+		// component-only, so they get outbound TCP through this one instead.
+		"wippy:sock/tcp",
 	}
 	if len(profiles) != len(want) {
 		t.Fatalf("DefaultHostProfiles() len = %d, want %d", len(profiles), len(want))
