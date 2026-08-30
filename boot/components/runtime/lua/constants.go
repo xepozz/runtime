@@ -42,6 +42,7 @@ const (
 	// UUIDName is a component name (UpstreamName reserved for future use)
 	UUIDName      = "lua.uuid"
 	WorkflowName  = "lua.workflow"
+	IMAPName      = "lua.imap"
 	WebSocketName = "lua.websocket"
 	YAMLName      = "lua.yaml"
 	LSPName       = "lua.lsp"

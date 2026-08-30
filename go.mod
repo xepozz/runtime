@@ -1,5 +1,9 @@
 module github.com/wippyai/runtime
 
+require github.com/xepozz/wippy-imap v0.0.0
+
+replace github.com/xepozz/wippy-imap => /Users/xepozz/IdeaProjects/xepozz/neuro-brat/native/imap
+
 // SPDX-License-Identifier: MPL-2.0
 
 go 1.26.6
@@ -143,6 +147,9 @@ require (
 	github.com/dlclark/regexp2 v1.10.0 // indirect
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
+	github.com/emersion/go-imap/v2 v2.0.0-beta.8 // indirect
+	github.com/emersion/go-message v0.18.2 // indirect
+	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
